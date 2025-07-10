@@ -1,70 +1,71 @@
 from ultralytics import YOLO
 import cv2
 import numpy as np
-
+import time
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-# Initialize Firebase (only once)
+# Initialize Firebase
 cred = credentials.Certificate("firebase_key.json")
 firebase_admin.initialize_app(cred)
-
 db = firestore.client()
 
-
-# 🔢 Function to calculate mask area in pixels
+# Function to calculate mask area
 def calculate_mask_areas(masks):
-    """
-    Calculates the area (in pixels) of each binary segmentation mask.
-    """
     areas = []
     for mask in masks.data:
-        binary_mask = mask.cpu().numpy().astype(np.uint8)  # Convert to NumPy uint8
-        area = np.sum(binary_mask)  # Count all non-zero pixels
+        binary_mask = mask.cpu().numpy().astype(np.uint8)
+        area = np.sum(binary_mask)
         areas.append(area)
     return areas
 
-# 1. Load the YOLOv8 Segmentation model
-model = YOLO('yolov8s-seg.pt')  # Ensure this is a segmentation model
+# Load YOLOv8 Segmentation model
+model = YOLO('yolov8s-seg.pt')
 
-# 2. Initialize webcam
+# Open webcam
 cap = cv2.VideoCapture(0)
-ret, frame = cap.read()
 
-if ret:
-    # 3. Save the captured image (optional)
-    cv2.imwrite("captured.jpg", frame)
+if not cap.isOpened():
+    print("❌ Failed to open webcam.")
+    exit()
 
-    # 4. Run YOLOv8 segmentation on the captured frame
-    results = model(frame)
+try:
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("❌ Failed to capture image from webcam.")
+            break
 
-    # 5. Plot the results with masks
-    annotated_image = results[0].plot()
+        # Run YOLOv8 segmentation
+        results = model(frame)
+        annotated_image = results[0].plot()
 
-    # ✅ 6. Calculate and print the segmented area(s)
-    if results[0].masks is not None:
-        # ✅ Convert NumPy uint64 to Python int
-        areas = [int(area) for area in calculate_mask_areas(results[0].masks)]
+        # Process segmentation results
+        if results[0].masks is not None:
+            areas = [int(area) for area in calculate_mask_areas(results[0].masks)]
 
-        data = {
-            "timestamp": firestore.SERVER_TIMESTAMP,
-            "detected": True,
-            "mask_areas": [15000, 22000]
-        }
+            data = {
+                "timestamp": firestore.SERVER_TIMESTAMP,
+                "detected": True,
+                "mask_areas": areas
+            }
 
-        doc_ref = db.collection("yolo_detections").add(data)
+            db.collection("yolo_detections").add(data)
+            print(f"✅ Sent to Firestore: {data}")
+        else:
+            print("⚠️ No masks detected.")
 
-        print(f"✅ Sent to Firestore: {data}")
+        # Optional: Display the result
+        cv2.imshow("YOLOv8 Segmentation", annotated_image)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
-    else:
-        print("⚠️ No masks detected.")
+        # Wait 20 seconds before next capture
+        time.sleep(20)
 
-    # 7. Display the result
-    cv2.imshow("YOLOv8 Segmentation", annotated_image)
-    cv2.waitKey(0)
+except KeyboardInterrupt:
+    print("⏹️ Stopped by user.")
+
+finally:
+    cap.release()
     cv2.destroyAllWindows()
-else:
-    print("❌ Failed to capture image from webcam.")
-
-cap.release()
-
