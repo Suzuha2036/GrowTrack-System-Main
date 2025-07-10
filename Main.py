@@ -2,6 +2,17 @@ from ultralytics import YOLO
 import cv2
 import numpy as np
 
+import firebase_admin
+from firebase_admin import credentials, firestore
+from datetime import datetime
+
+# Initialize Firebase (only once)
+cred = credentials.Certificate("firebase_key.json")
+firebase_admin.initialize_app(cred)
+
+db = firestore.client()
+
+
 # 🔢 Function to calculate mask area in pixels
 def calculate_mask_areas(masks):
     """
@@ -33,9 +44,19 @@ if ret:
 
     # ✅ 6. Calculate and print the segmented area(s)
     if results[0].masks is not None:
-        areas = calculate_mask_areas(results[0].masks)
-        for i, area in enumerate(areas):
-            print(f"Mask {i+1} Area: {area} pixels")
+        # ✅ Convert NumPy uint64 to Python int
+        areas = [int(area) for area in calculate_mask_areas(results[0].masks)]
+
+        data = {
+            "timestamp": firestore.SERVER_TIMESTAMP,
+            "detected": True,
+            "mask_areas": [15000, 22000]
+        }
+
+        doc_ref = db.collection("yolo_detections").add(data)
+
+        print(f"✅ Sent to Firestore: {data}")
+
     else:
         print("⚠️ No masks detected.")
 
