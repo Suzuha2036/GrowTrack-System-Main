@@ -4,7 +4,6 @@ import numpy as np
 
 import firebase_admin
 from firebase_admin import credentials, firestore
-from datetime import datetime
 
 # Initialize Firebase (only once)
 cred = credentials.Certificate("firebase_key.json")
