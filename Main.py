@@ -2,70 +2,82 @@ from ultralytics import YOLO
 import cv2
 import numpy as np
 import time
-import firebase_admin
-from firebase_admin import credentials, firestore
+import os
 
-# Initialize Firebase
-cred = credentials.Certificate("firebase_key.json")
-firebase_admin.initialize_app(cred)
-db = firestore.client()
+# Create output folder
+os.makedirs("output", exist_ok=True)
 
-# Function to calculate mask area
-def calculate_mask_areas(masks):
-    areas = []
-    for mask in masks.data:
-        binary_mask = mask.cpu().numpy().astype(np.uint8)
-        area = np.sum(binary_mask)
-        areas.append(area)
-    return areas
+# Load YOLOv8 segmentation model
+model = YOLO("yolov8s-seg.pt")
 
-# Load YOLOv8 Segmentation model
-model = YOLO('yolov8s-seg.pt')
+# Function to get available camera indices
+def find_cameras(max_test=5):
+    indices = []
+    for i in range(max_test):
+        cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+        if cap.read()[0]:
+            indices.append(i)
+        cap.release()
+    return indices
 
-# Open webcam
-cap = cv2.VideoCapture(0)
+# Function to calculate height from mask
+def get_mask_height(mask):
+    mask = mask.astype(np.uint8)
+    ys, _ = np.where(mask == 1)
+    if len(ys) > 0:
+        return int(np.max(ys) - np.min(ys))
+    else:
+        return 0
 
-if not cap.isOpened():
-    print("❌ Failed to open webcam.")
+# Find all working cameras
+camera_indices = find_cameras()
+if not camera_indices:
+    print("❌ No available cameras found.")
     exit()
 
-try:
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("❌ Failed to capture image from webcam.")
-            break
+print(f"📷 Found cameras: {camera_indices}")
 
-        # Run YOLOv8 segmentation
-        results = model(frame)
-        annotated_image = results[0].plot()
+# Loop over cameras in sequence
+current_index = 0
+while True:
+    cam_id = camera_indices[current_index]
+    print(f"🎥 Using camera {cam_id}")
+    cap = cv2.VideoCapture(cam_id, cv2.CAP_DSHOW)
+    time.sleep(2)  # Let camera warm up
 
-        # Process segmentation results
-        if results[0].masks is not None:
-            areas = [int(area) for area in calculate_mask_areas(results[0].masks)]
-
-            data = {
-                "timestamp": firestore.SERVER_TIMESTAMP,
-                "detected": True,
-                "mask_areas": areas
-            }
-
-            db.collection("yolo_detections").add(data)
-            print(f"✅ Sent to Firestore: {data}")
-        else:
-            print("⚠️ No masks detected.")
-
-        # Optional: Display the result
-        cv2.imshow("YOLOv8 Segmentation", annotated_image)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-        # Wait 20 seconds before next capture
-        time.sleep(20)
-
-except KeyboardInterrupt:
-    print("⏹️ Stopped by user.")
-
-finally:
+    ret, frame = cap.read()
     cap.release()
-    cv2.destroyAllWindows()
+
+    if not ret:
+        print(f"⚠️ Failed to capture from camera {cam_id}")
+    else:
+        results = model(frame)
+
+        # Get height of "person" class only
+        if results[0].masks is not None and results[0].boxes is not None:
+            names = model.names  # class index to label mapping
+            classes = results[0].boxes.cls.cpu().numpy().astype(int)
+
+            found_person = False
+            for i, class_id in enumerate(classes):
+                label = names[class_id]
+                if label == "person":
+                    found_person = True
+                    mask = results[0].masks.data[i].cpu().numpy()
+                    height_px = get_mask_height(mask)
+                    print(f"🧍 Plant height from cam {cam_id}: {height_px} px")
+
+                    # Save person mask image with timestamp
+                    timestamp = time.strftime("%Y%m%d-%H%M%S")
+                    mask_filename = f"output/mask_person_cam{cam_id}_{timestamp}.png"
+                    cv2.imwrite(mask_filename, mask * 255)
+                    break
+
+            if not found_person:
+                print("⚠️ No 'person' class detected.")
+        else:
+            print("⚠️ No masks or boxes detected.")
+
+    # Move to next camera after 10 seconds
+    current_index = (current_index + 1) % len(camera_indices)
+    time.sleep(10)
