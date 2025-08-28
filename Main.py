@@ -1,83 +1,100 @@
 from ultralytics import YOLO
 import cv2
 import numpy as np
-import time
 import os
 
-# Create output folder
-os.makedirs("output", exist_ok=True)
+# Load YOLO model
+model = YOLO("yolov8n.pt")
 
-# Load YOLOv8 segmentation model
-model = YOLO("yolov8s-seg.pt")
+# Green color range (HSV)
+lower_green = np.array([35, 40, 40])
+upper_green = np.array([85, 255, 255])
 
-# Function to get available camera indices
-def find_cameras(max_test=5):
-    indices = []
-    for i in range(max_test):
-        cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
-        if cap.read()[0]:
-            indices.append(i)
-        cap.release()
-    return indices
+# Black/soil range (HSV)
+lower_black = np.array([0, 0, 0])
+upper_black = np.array([180, 255, 50])
 
-# Function to calculate height from mask
-def get_mask_height(mask):
-    mask = mask.astype(np.uint8)
-    ys, _ = np.where(mask == 1)
-    if len(ys) > 0:
-        return int(np.max(ys) - np.min(ys))
-    else:
-        return 0
+# --- Reference for pixel to cm conversion ---
+reference_height_cm = 25.4   # 10 inches = 25.4 cm
+reference_height_px = 330    # measured pixel height
+scale_factor = reference_height_cm / reference_height_px
 
-# Find all working cameras
-camera_indices = find_cameras()
-if not camera_indices:
-    print("❌ No available cameras found.")
+# --- Load test image ---
+image_path = "test_image/test_1.jpg"   # change to your file
+frame = cv2.imread(image_path)
+
+if frame is None:
+    print("Failed to load image:", image_path)
     exit()
 
-print(f"📷 Found cameras: {camera_indices}")
+# Copy for drawing
+output_frame = frame.copy()
 
-# Loop over cameras in sequence
-current_index = 0
-while True:
-    cam_id = camera_indices[current_index]
-    print(f"🎥 Using camera {cam_id}")
-    cap = cv2.VideoCapture(cam_id, cv2.CAP_DSHOW)
-    time.sleep(2)  # Let camera warm up
+# Run YOLO detection (suppress console logs)
+results = model(frame, verbose=False)
 
-    ret, frame = cap.read()
-    cap.release()
+for result in results:
+    for box in result.boxes:
+        cls_id = int(box.cls[0])  # class ID
+        cls_name = model.names[cls_id]  # class name
 
-    if not ret:
-        print(f"⚠️ Failed to capture from camera {cam_id}")
-    else:
-        results = model(frame)
+        if cls_name != "potted plant":
+            continue
+        cls_name = "plant"
 
-        # Get height of "person" class only
-        if results[0].masks is not None and results[0].boxes is not None:
-            names = model.names  # class index to label mapping
-            classes = results[0].boxes.cls.cpu().numpy().astype(int)
+        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        roi = frame[y1:y2, x1:x2]
 
-            found_person = False
-            for i, class_id in enumerate(classes):
-                label = names[class_id]
-                if label == "person":
-                    found_person = True
-                    mask = results[0].masks.data[i].cpu().numpy()
-                    height_px = get_mask_height(mask)
-                    print(f"🧍 Plant height from cam {cam_id}: {height_px} px")
+        if roi.size == 0:
+            continue
 
-                    # Save person mask image with timestamp
-                    timestamp = time.strftime("%Y%m%d-%H%M%S")
-                    mask_filename = f"output/mask_person_cam{cam_id}_{timestamp}.png"
-                    cv2.imwrite(mask_filename, mask * 255)
-                    break
+        hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
 
-            if not found_person:
-                print("⚠️ No 'person' class detected.")
-        else:
-            print("⚠️ No masks or boxes detected.")
+        # --- Soil detection (black) ---
+        mask_black = cv2.inRange(hsv_roi, lower_black, upper_black)
+        soil_y = y2
+        black_pixels = np.where(mask_black > 0)
+        if black_pixels[0].size > 0:
+            soil_y = y1 + np.max(black_pixels[0])
 
-    # Move to next camera after 10 seconds
-    current_index = (current_index + 1) % len(camera_indices)
-    time.sleep(10)
+        # --- Plant detection (green) ---
+        mask_green = cv2.inRange(hsv_roi, lower_green, upper_green)
+        green_pixels = np.where(mask_green > 0)
+        if green_pixels[0].size == 0:
+            continue
+
+        top_leaf_y = y1 + np.min(green_pixels[0])
+
+        # --- Height calculation ---
+        plant_height_px = soil_y - top_leaf_y
+        plant_height_cm = plant_height_px * scale_factor
+
+        # --- Draw on original image ---
+        cv2.rectangle(output_frame, (x1, top_leaf_y), (x2, soil_y), (0, 255, 0), 2)
+        mid_x = (x1 + x2) // 2
+        cv2.line(output_frame, (mid_x, top_leaf_y), (mid_x, soil_y), (255, 0, 0), 2)
+        cv2.putText(output_frame, f"Plant Height: {plant_height_cm:.2f} cm",
+                    (x1, top_leaf_y - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+# Save output
+os.makedirs("detected_output", exist_ok=True)
+out_path = "detected_output/plants_detected.jpg"
+cv2.imwrite(out_path, output_frame)
+
+print(f"✅ Processed image saved at: {out_path}")
+
+# Show preview
+screen_res = 1280, 720   # change if your screen is bigger
+scale_width = screen_res[0] / output_frame.shape[1]
+scale_height = screen_res[1] / output_frame.shape[0]
+scale = min(scale_width, scale_height)
+
+# Resize to fit screen
+window_width = int(output_frame.shape[1] * scale)
+window_height = int(output_frame.shape[0] * scale)
+resized = cv2.resize(output_frame, (window_width, window_height))
+
+cv2.imshow("Plant Height Detection", resized)
+cv2.waitKey(0)
+cv2.destroyAllWindows()
