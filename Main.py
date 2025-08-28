@@ -2,6 +2,14 @@ from ultralytics import YOLO
 import cv2
 import numpy as np
 import os
+import firebase_admin
+from firebase_admin import credentials, firestore
+from datetime import datetime, timezone
+
+# --- Firebase Init ---
+cred = credentials.Certificate("firebase_key.json")
+firebase_admin.initialize_app(cred)
+db = firestore.client()
 
 # Load YOLO model
 model = YOLO("yolov8n.pt")
@@ -20,23 +28,39 @@ reference_height_px = 330    # measured pixel height
 scale_factor = reference_height_cm / reference_height_px
 
 # --- Load test image ---
-image_path = "test_image/test_1.jpg"   # change to your file
+image_path = "test_image/test_1.jpg"
 frame = cv2.imread(image_path)
 
 if frame is None:
     print("Failed to load image:", image_path)
     exit()
 
+# Create output directories
+os.makedirs("detected_output", exist_ok=True)
+os.makedirs("debug_output", exist_ok=True)
+
 # Copy for drawing
 output_frame = frame.copy()
 
-# Run YOLO detection (suppress console logs)
+# Define 4 equal-width regions for plants
+height, width, _ = frame.shape
+plant_regions = np.linspace(0, width, 5, dtype=int)  # 5 points = 4 regions
+
+# Debug: draw dividers
+for x in plant_regions:
+    cv2.line(output_frame, (x, 0), (x, height), (0, 0, 255), 2)
+
+# Run YOLO detection
 results = model(frame, verbose=False)
 
+# Track plant data
+plants_detected = {f"plant{i+1}": {"detected": False, "height_cm": None} for i in range(4)}
+
+# Process YOLO detections
 for result in results:
     for box in result.boxes:
-        cls_id = int(box.cls[0])  # class ID
-        cls_name = model.names[cls_id]  # class name
+        cls_id = int(box.cls[0])
+        cls_name = model.names[cls_id]
 
         if cls_name != "potted plant":
             continue
@@ -48,16 +72,25 @@ for result in results:
         if roi.size == 0:
             continue
 
+        # Determine which plant region this falls into
+        box_mid_x = (x1 + x2) // 2
+        plant_idx = np.searchsorted(plant_regions, box_mid_x) - 1
+        if plant_idx < 0 or plant_idx >= 4:
+            continue
+
+        plant_name = f"plant{plant_idx+1}"
+
+        # Convert to HSV
         hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
 
-        # --- Soil detection (black) ---
+        # Soil mask
         mask_black = cv2.inRange(hsv_roi, lower_black, upper_black)
         soil_y = y2
         black_pixels = np.where(mask_black > 0)
         if black_pixels[0].size > 0:
             soil_y = y1 + np.max(black_pixels[0])
 
-        # --- Plant detection (green) ---
+        # Plant mask
         mask_green = cv2.inRange(hsv_roi, lower_green, upper_green)
         green_pixels = np.where(mask_green > 0)
         if green_pixels[0].size == 0:
@@ -65,36 +98,44 @@ for result in results:
 
         top_leaf_y = y1 + np.min(green_pixels[0])
 
-        # --- Height calculation ---
+        # Height calculation
         plant_height_px = soil_y - top_leaf_y
         plant_height_cm = plant_height_px * scale_factor
 
-        # --- Draw on original image ---
+        # Update plant detection
+        plants_detected[plant_name] = {
+            "detected": True,
+            "height_cm": round(plant_height_cm, 2)
+        }
+
+        # Draw debug rectangle
         cv2.rectangle(output_frame, (x1, top_leaf_y), (x2, soil_y), (0, 255, 0), 2)
-        mid_x = (x1 + x2) // 2
-        cv2.line(output_frame, (mid_x, top_leaf_y), (mid_x, soil_y), (255, 0, 0), 2)
-        cv2.putText(output_frame, f"Plant Height: {plant_height_cm:.2f} cm",
+        cv2.putText(output_frame, f"{plant_name} {plant_height_cm:.2f} cm",
                     (x1, top_leaf_y - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
 
 # Save output
-os.makedirs("detected_output", exist_ok=True)
 out_path = "detected_output/plants_detected.jpg"
 cv2.imwrite(out_path, output_frame)
 
-print(f"✅ Processed image saved at: {out_path}")
+# --- Store in Firestore ---
+timestamp = datetime.now(timezone.utc).isoformat()
 
-# Show preview
-screen_res = 1280, 720   # change if your screen is bigger
-scale_width = screen_res[0] / output_frame.shape[1]
-scale_height = screen_res[1] / output_frame.shape[0]
-scale = min(scale_width, scale_height)
+for plant_name, data in plants_detected.items():
+    doc_ref = db.collection("plants_growth").document(plant_name)
+    measurements_ref = doc_ref.collection("measurements").document(timestamp)
 
-# Resize to fit screen
-window_width = int(output_frame.shape[1] * scale)
-window_height = int(output_frame.shape[0] * scale)
-resized = cv2.resize(output_frame, (window_width, window_height))
+    measurements_ref.set({
+        "detected": data["detected"],
+        "height_cm": data["height_cm"],
+        "timestamp": timestamp
+    })
 
-cv2.imshow("Plant Height Detection", resized)
-cv2.waitKey(0)
-cv2.destroyAllWindows()
+# Print results
+for plant_name, data in plants_detected.items():
+    if data["detected"]:
+        print(f"{plant_name} detected, Height = {data['height_cm']} cm")
+    else:
+        print(f"{plant_name} NOT detected")
+
+print(f"🖼Processed image saved at: {out_path}")
