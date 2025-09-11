@@ -7,8 +7,11 @@ from firebase_admin import credentials, firestore
 from datetime import datetime, timezone
 import time
 
+
+#main file does not saved on github
+
 # --- Firebase Init ---
-cred = credentials.Certificate("firebase_key_python.json")
+cred = credentials.Certificate("firebase_key.json")
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
@@ -77,9 +80,9 @@ try:
                 cls_id = int(box.cls[0])
                 cls_name = model.names[cls_id]
 
-                if cls_name != "potted plant":
+                if cls_name != "eggplant":
                     continue
-                cls_name = "plant"
+                cls_name = "eggplant"
 
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 roi = frame[y1:y2, x1:x2]
@@ -177,7 +180,7 @@ try:
             break
 
 except KeyboardInterrupt:
-    print("Stopping automatic capture.")
+    print("Stop automatic capture.")
 
 finally:
     cap.release()
