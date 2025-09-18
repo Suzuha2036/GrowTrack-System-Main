@@ -14,7 +14,7 @@ db = firestore.client()
 
 
 # Load YOLO model
-model = YOLO("best.pt")
+model = YOLO("yolov8n.pt")
 
 # Color ranges (HSV)
 lower_green = np.array([35, 40, 40])
@@ -52,7 +52,7 @@ try:
         output_frame = frame.copy()
 
         h, w, _ = frame.shape
-        plant_regions = np.linspace(0, w, 5, dtype=int)
+        plant_regions = np.linspace(0, w, 3, dtype=int)
 
         for x in plant_regions:
             cv2.line(output_frame, (x, 0), (x, h), (0, 0, 255), 2)
@@ -61,14 +61,14 @@ try:
 
         plants_detected = {
             f"plant{i+1}": {"detected": False, "height_cm": None, "height_px": None}
-            for i in range(4)
+            for i in range(2)
         }
 
         for result in results:
             for box in result.boxes:
                 cls_id = int(box.cls[0])
                 cls_name = model.names[cls_id]
-                if cls_name != "eggplant":
+                if cls_name != "potted plant":
                     continue
 
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -110,7 +110,7 @@ try:
                             (x1, max(0, top_leaf_y - 10)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
 
-        for i in range(4):
+        for i in range(2):
             plant_name = f"plant{i+1}"
             section_x_start = plant_regions[i]
             text = f"Detected: {plants_detected[plant_name]['height_px']} px" if plants_detected[plant_name]["detected"] else "No plant"
