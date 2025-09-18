@@ -7,7 +7,7 @@ from firebase_admin import credentials, firestore
 from datetime import datetime, timezone
 import time
 
-# Force headless OpenCV (no GUI)
+# Force headless OpenCV
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 # --- Firebase Init ---
