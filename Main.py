@@ -7,11 +7,13 @@ from firebase_admin import credentials, firestore
 from datetime import datetime, timezone
 import time
 
+# Force headless OpenCV (no GUI)
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
 # --- Firebase Init ---
-cred = credentials.Certificate("firebase_key.json")  # ensure same project as the Android app
+cred = credentials.Certificate("firebase_key.json")
 firebase_admin.initialize_app(cred)
 db = firestore.client()
-
 
 # Load YOLO model
 model = YOLO("yolov8n.pt")
@@ -105,6 +107,7 @@ try:
                     "height_px": int(height_px),
                 }
 
+                # Draw on output_frame (still saved, even headless)
                 cv2.rectangle(output_frame, (x1, top_leaf_y), (x2, soil_y), (0, 255, 0), 2)
                 cv2.putText(output_frame, f"{plant_name} {height_cm:.2f} cm",
                             (x1, max(0, top_leaf_y - 10)),
@@ -117,8 +120,7 @@ try:
             cv2.putText(output_frame, text, (section_x_start + 10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
-        cv2.imshow("Plant Detection", output_frame)
-
+        # Save output image
         ts_file = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         out_path = f"detected_output/plants_{ts_file}.jpg"
         cv2.imwrite(out_path, output_frame)
@@ -148,14 +150,9 @@ try:
 
         batch.commit()
 
-        #system active
+        # System active status
         status_ref = db.collection("plant_growth").document("system_status")
-
-        now = datetime.now(timezone.utc).isoformat()
-        status_ref.set({
-            "timestamp": now,
-            "type": "service"
-        }, merge=True)
+        status_ref.set({"timestamp": ts_iso, "type": "service"}, merge=True)
 
         for plant_name, data in plants_detected.items():
             if data["detected"]:
@@ -163,14 +160,11 @@ try:
             else:
                 print(f"{plant_name}: NOT detected")
 
-        if cv2.waitKey(capture_interval * 1000) & 0xFF == ord('q'):
-            break
+        time.sleep(capture_interval)
 
 except KeyboardInterrupt:
     print("Stopping capture.")
 
-
 finally:
     cap.release()
-    cv2.destroyAllWindows()
 
